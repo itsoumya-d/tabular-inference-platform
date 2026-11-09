@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tabular Inference Platform</title>
+<style>
+  :root { color-scheme: dark; --bg:#0f1115; --panel:#171a21; --text:#e6e9ef; --muted:#9aa3b2; --accent:#4f8cff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:20px 28px; border-bottom:1px solid #242936; display:flex; justify-content:space-between; align-items:center; }
+  h1 { font-size:20px; margin:0; } .muted{color:var(--muted)}
+  main { display:grid; grid-template-columns: 340px 1fr; gap:16px; padding:20px 28px; max-width:1200px; margin:0 auto; }
+  .panel { background:var(--panel); border:1px solid #242936; border-radius:12px; padding:16px; }
+  button { background:var(--accent); color:#fff; border:0; padding:9px 14px; border-radius:8px; cursor:pointer; font-weight:600; }
+  button.secondary { background:#242936; }
+  input, select { width:100%; padding:9px; border-radius:8px; border:1px solid #2c3345; background:#0f1115; color:var(--text); margin:6px 0 12px; }
+  pre { background:#0b0d11; padding:12px; border-radius:10px; overflow:auto; font-size:12px; max-height:420px; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; } .stat{font-size:22px;font-weight:700}
+  @media (max-width:800px){ main{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+<header>
+  <div><h1>Tabular Inference Platform</h1><div class="muted">Rows × columns · synthetic deterministic inference · FastAPI</div></div>
+  <span id="health" class="muted">checking…</span>
+</header>
+<main>
+  <section class="panel">
+    <h2>Upload dataset</h2>
+    <p class="muted">CSV or JSON (list of objects, or {"rows": [...]}).</p>
+    <input type="file" id="file" accept=".csv,.json" />
+    <button id="upload">Upload</button>
+    <h2 style="margin-top:20px">Run inference</h2>
+    <label>Dataset ID<input id="datasetId" placeholder="from upload" /></label>
+    <label>Mode<select id="mode"><option value="sync">sync</option><option value="async">async</option></select></label>
+    <label>Batch size<input id="batchSize" type="number" value="128" /></label>
+    <label>Idempotency-Key<input id="idem" placeholder="optional" /></label>
+    <button id="run">Submit job</button>
+    <button id="refresh" class="secondary">Refresh stats / SLO</button>
+  </section>
+  <section>
+    <div class="panel" style="margin-bottom:16px">
+      <h2>Stats &amp; SLO</h2>
+      <div class="grid">
+        <div><div class="stat" id="rows">—</div><div class="muted">rows</div></div>
+        <div><div class="stat" id="p95">—</div><div class="muted">p95 ms</div></div>
+        <div><div class="stat" id="throughput">—</div><div class="muted">rows/sec</div></div>
+      </div>
+    </div>
+    <div class="panel"><h2>Output</h2><pre id="out">Ready.</pre></div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const out = (v) => { $('out').textContent = typeof v === 'string' ? v : JSON.stringify(v, null, 2); };
+async function j(url, opts={}) { const r = await fetch(url, opts); const t = await r.text(); try { return JSON.parse(t); } catch { return t; } }
+$('health').textContent = (await j('/health')).status || 'down';
+$('upload').onclick = async () => {
+  const f = $('file').files[0]; if (!f) return out('Pick a file first.');
+  const fd = new FormData(); fd.append('file', f);
+  const r = await j('/datasets/upload', {method:'POST', body:fd});
+  if (r.dataset_id) $('datasetId').value = r.dataset_id; out(r);
+};
+async function refresh() {
+  const id = $('datasetId').value;
+  if (id) { const s = await j(`/datasets/${id}/stats`); $('rows').textContent = s.row_count ?? '—'; out(s); }
+  const slo = await j('/metrics/slo'); $('p95').textContent = slo.p95_ms; $('throughput').textContent = slo.throughput_rows_per_sec;
+}
+$('refresh').onclick = refresh;
+$('run').onclick = async () => {
+  const headers = {'Content-Type':'application/json'};
+  if ($('idem').value) headers['Idempotency-Key'] = $('idem').value;
+  const body = {dataset_id:$('datasetId').value, mode:$('mode').value, batch_size:+$('batchSize').value};
+  const job = await j('/jobs', {method:'POST', headers, body:JSON.stringify(body)});
+  out(job);
+  if (body.mode === 'async' && job.job_id) {
+    const poll = async () => { const cur = await j(`/jobs/${job.job_id}`); out(cur); if (cur.status==='pending'||cur.status==='running') setTimeout(poll, 250); };
+    setTimeout(poll, 250);
+  }
+  refresh();
+};
+</script>
+</body>
+</html>
